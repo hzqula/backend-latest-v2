@@ -1,0 +1,236 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "app/generated/prisma/client"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        Int      @id @default(autoincrement())
+  email     String   @unique
+  password  String
+  role      UserRole
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now())
+
+  otp      OTP[]
+  isVerify Boolean @default(false)
+
+  studentId     Int? @unique
+  lecturerId    Int? @unique
+  coordinatorId Int? @unique
+
+  student     Student?      @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  lecturer    Lecturer?     @relation(fields: [lecturerId], references: [id], onDelete: Cascade)
+  coordinator Coordinator?  @relation(fields: [coordinatorId], references: [id], onDelete: Cascade)
+  securityLog SecurityLog[]
+}
+
+model OTP {
+  id        String   @id @default(cuid())
+  code      Int
+  expiresAt DateTime
+  userId    Int
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+}
+
+model Student {
+  id             Int       @id @default(autoincrement())
+  nim            String    @unique
+  name           String
+  phoneNumber    String    @map("phone_number")
+  profilePicture String?   @map("profile_picture")
+  user           User?
+  seminars       Seminar[]
+}
+
+model Lecturer {
+  id             Int     @id @default(autoincrement())
+  nip            String  @unique
+  name           String
+  phoneNumber    String  @map("phone_number")
+  profilePicture String? @map("profile_picture")
+  user           User?
+
+  seminarAdvisors  SeminarAdvisor[]
+  seminarAssessors SeminarAssessor[]
+  assessments      Assessment[]
+}
+
+model ExternalAdvisor {
+  id          Int      @id @default(autoincrement())
+  name        String
+  externalId  String   @unique
+  contact     String
+  institution String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @default(now())
+
+  seminarAdvisors SeminarAdvisor[]
+  assessments     Assessment[]
+  assessmentLinks AssessmentLink[]
+}
+
+model Coordinator {
+  id             Int            @id @default(autoincrement())
+  name           String
+  profilePicture String?        @map("profile_picture")
+  user           User?
+  announcements  Announcement[] // Relasi one-to-many otomatis
+}
+
+model Seminar {
+  id        Int           @id @default(autoincrement())
+  type      SeminarType
+  title     String
+  status    SeminarStatus @default(DRAFT)
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @default(now())
+  folderId  String?
+
+  studentNIM String
+  student    Student @relation(fields: [studentNIM], references: [nim])
+
+  advisors        SeminarAdvisor[]
+  assessors       SeminarAssessor[]
+  documents       SeminarDocument[]
+  assessments     Assessment[]
+  assessmentLinks AssessmentLink[]
+
+  time DateTime?
+  room String?
+}
+
+model SeminarAdvisor {
+  id                Int              @id @default(autoincrement())
+  seminarId         Int
+  lecturerNIP       String?
+  externalAdvisorId Int?
+  seminar           Seminar          @relation(fields: [seminarId], references: [id], onDelete: Cascade)
+  lecturer          Lecturer?        @relation(fields: [lecturerNIP], references: [nip], onDelete: Cascade)
+  externalAdvisor   ExternalAdvisor? @relation(fields: [externalAdvisorId], references: [id], onDelete: Cascade)
+}
+
+model SeminarAssessor {
+  id          Int     @id @default(autoincrement())
+  seminarId   Int
+  lecturerNIP String?
+
+  seminar  Seminar   @relation(fields: [seminarId], references: [id], onDelete: Cascade)
+  lecturer Lecturer? @relation(fields: [lecturerNIP], references: [nip], onDelete: Cascade)
+}
+
+model SeminarDocument {
+  id           Int          @id @default(autoincrement())
+  seminarId    Int
+  documentType DocumentType
+  fileName     String
+  fileURL      String
+  seminar      Seminar      @relation(fields: [seminarId], references: [id], onDelete: Cascade)
+}
+
+model Assessment {
+  id           Int          @id @default(autoincrement())
+  lecturerRole LecturerRole @map("lecturer_role")
+
+  presentationScore   Float?   @map("presentation_score")
+  masteryScore        Float?   @map("mastery_score")
+  characteristicScore Float?   @map("characteristic_score")
+  writingScore        Float?   @map("writing_score")
+  finalScore          Float?   @map("final_score")
+  feedback            String?
+  createdAt           DateTime @default(now())
+
+  lecturerNIP       String?
+  externalAdvisorId Int?
+  seminarId         Int
+  lecturer          Lecturer?        @relation(fields: [lecturerNIP], references: [nip])
+  externalAdvisor   ExternalAdvisor? @relation(fields: [externalAdvisorId], references: [id], onDelete: Cascade)
+  seminar           Seminar          @relation(fields: [seminarId], references: [id], onDelete: Cascade)
+
+  @@unique([seminarId, lecturerNIP, externalAdvisorId])
+}
+
+model AssessmentLink {
+  id                Int      @id @default(autoincrement())
+  token             String   @unique
+  seminarId         Int
+  externalAdvisorId Int
+  expiresAt         DateTime
+  used              Boolean  @default(false)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @default(now())
+
+  seminar         Seminar         @relation(fields: [seminarId], references: [id], onDelete: Cascade)
+  externalAdvisor ExternalAdvisor @relation(fields: [externalAdvisorId], references: [id], onDelete: Cascade)
+
+  @@unique([seminarId, externalAdvisorId])
+}
+
+model Announcement {
+  id            Int         @id @default(autoincrement())
+  title         String
+  content       String
+  visibility    String[]
+  coordinatorId Int
+  coordinator   Coordinator @relation(fields: [coordinatorId], references: [id], onDelete: Cascade)
+  image         String?
+  createdAt     DateTime    @default(now())
+}
+
+enum Visibility {
+  LECTURER
+  STUDENT
+  PUBLIC
+}
+
+enum UserRole {
+  STUDENT
+  LECTURER
+  COORDINATOR
+}
+
+enum SeminarType {
+  PROPOSAL
+  HASIL
+}
+
+enum DocumentType {
+  ADVISOR_AVAILABILITY
+  KRS
+  ADVISOR_ASSISTANCE
+  SEMINAR_ATTENDANCE
+  THESIS_PROPOSAL
+  FREE_THEORY_CERTIFICATE
+  ADVISOR_APPROVAL
+  EXAMINER_APPROVAL
+  TRANSCRIPT
+  ASSISTANCE_SHEET
+  FINAL_THESIS
+}
+
+enum SeminarStatus {
+  DRAFT
+  SUBMITTED
+  SCHEDULED
+  COMPLETED
+}
+
+enum LecturerRole {
+  ADVISOR
+  ASSESSOR
+}
+
+model SecurityLog {
+  id        Int      @id @default(autoincrement())
+  userId    Int?
+  user      User?    @relation(fields: [userId], references: [id])
+  action    String
+  ipAddress String
+  device    String
+  createdAt DateTime @default(now())
+}
