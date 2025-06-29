@@ -25,6 +25,9 @@ app.use((error: Error, req: Request, res: Response, next: NextFunction) => {
 });
 
 // Start Server
+app.get("/", (req: Request, res: Response) => {
+  res.send("Welcome to Latest API");
+});
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
