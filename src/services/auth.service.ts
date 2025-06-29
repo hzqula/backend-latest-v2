@@ -222,13 +222,6 @@ export class AuthService {
   ): Promise<{ token: string; user: any }> {
     const { email, password, recaptchaToken } = dto;
 
-    // Validasi reCAPTCHA
-    const isRecaptchaValid =
-      await this.recaptchaService.verifyRecaptcha(recaptchaToken);
-    if (!isRecaptchaValid) {
-      throw new HttpError(400, "Verifikasi reCAPTCHA gagal");
-    }
-
     // Cari pengguna berdasarkan email
     const user = await this.userRepository.findByEmail(email);
     if (!user || !user.isVerify) {
@@ -292,6 +285,13 @@ export class AuthService {
         expiresIn: "1h",
       }
     );
+
+    // Validasi reCAPTCHA
+    const isRecaptchaValid =
+      await this.recaptchaService.verifyRecaptcha(recaptchaToken);
+    if (!isRecaptchaValid) {
+      throw new HttpError(400, "Verifikasi reCAPTCHA gagal");
+    }
 
     // Catat aktivitas login ke SecurityLog
     await this.securityLogRepository.create({
