@@ -53,7 +53,7 @@ export const RegisterUserSchema = z
         message: "NIP harus berupa angka dan minimal 8 digit",
       }),
     phoneNumber: z.string().regex(/^08[0-9]{9,11}$/, {
-      message: "Nomor telepon harus diawali +62 dan memiliki 11-13 digit",
+      message: "Nomor telepon harus diawali 08 dan memiliki 11-13 digit",
     }),
     password: z
       .string()
@@ -83,10 +83,11 @@ export const LoginSchema = z.object({
     .refine(
       (email) =>
         email.endsWith("@student.unri.ac.id") ||
-        email.endsWith("@lecturer.unri.ac.id"),
+        email.endsWith("@lecturer.unri.ac.id") ||
+        email.endsWith("@eng.unri.ac.id"),
       {
         message:
-          "Email harus menggunakan domain @student.unri.ac.id atau @lecturer.unri.ac.id",
+          "Email harus menggunakan domain @student.unri.ac.id, @lecturer.unri.ac.id, atau @eng.unri.ac.id",
       }
     ),
   password: z.string().min(1, "Kata sandi wajib diisi"),
