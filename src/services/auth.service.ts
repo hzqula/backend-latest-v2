@@ -17,6 +17,7 @@ import { HttpError } from "../utils/error";
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import { JWT_SECRET } from "../configs/env";
+import { prisma } from "../configs/prisma";
 
 export class AuthService {
   private userRepository: UserRepository;
@@ -69,7 +70,7 @@ export class AuthService {
     }
 
     const otpCode = Math.floor(100000 + Math.random() * 900000);
-    const expiresAt = new Date(Date.now() + 1 * 60 * 1000); // 10 menit kadaluarsa
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 menit kadaluarsa
 
     await this.otpRepository.create({
       code: otpCode,
@@ -129,13 +130,34 @@ export class AuthService {
 
   public async registerUser(
     dto: RegisterUserDto,
-    file?: Express.Multer.File
+    file?: Express.Multer.File,
+    ipAddress?: string,
+    device?: string
   ): Promise<any> {
     const { email, password, name, nim, nip, phoneNumber } = dto;
 
     const user = await this.userRepository.findByEmail(email);
     if (!user || !user.isVerify) {
+      await this.securityLogRepository.create({
+        user: user ? { connect: { id: user.id } } : undefined,
+        action: "REGISTER_USER_FAILED",
+        ipAddress: ipAddress || "unknown",
+        device: device || "unknown",
+        createdAt: new Date(),
+      });
       throw new HttpError(400, "Email belum diverifikasi");
+    }
+
+    // Periksa apakah email sudah terkait dengan studentId atau lecturerId
+    if (user.studentId || user.lecturerId) {
+      await this.securityLogRepository.create({
+        user: { connect: { id: user.id } },
+        action: "REGISTER_USER_FAILED",
+        ipAddress: ipAddress || "unknown",
+        device: device || "unknown",
+        createdAt: new Date(),
+      });
+      throw new HttpError(400, "Email sudah terkait dengan akun lain");
     }
 
     let profilePictureUrl: string | undefined;
@@ -176,6 +198,14 @@ export class AuthService {
       });
     }
 
+    await this.securityLogRepository.create({
+      user: { connect: { id: user.id } },
+      action: "REGISTER_USER_SUCCESS",
+      ipAddress: ipAddress || "unknown",
+      device: device || "unknown",
+      createdAt: new Date(),
+    });
+
     return {
       id: user.id,
       email,
@@ -202,12 +232,55 @@ export class AuthService {
     // Cari pengguna berdasarkan email
     const user = await this.userRepository.findByEmail(email);
     if (!user || !user.isVerify) {
+      await this.securityLogRepository.create({
+        user: user ? { connect: { id: user.id } } : undefined,
+        action: "LOGIN_FAILED",
+        ipAddress,
+        device,
+        createdAt: new Date(),
+      });
       throw new HttpError(401, "Email atau kata sandi tidak valid");
+    }
+
+    // Pengecualian untuk email koordinator
+    if (email.endsWith("@eng.unri.ac.id")) {
+      if (user.role !== UserRole.COORDINATOR || !user.coordinatorId) {
+        await this.securityLogRepository.create({
+          user: { connect: { id: user.id } },
+          action: "LOGIN_FAILED",
+          ipAddress,
+          device,
+          createdAt: new Date(),
+        });
+        throw new HttpError(
+          403,
+          "Email hanya dapat digunakan untuk akun koordinator"
+        );
+      }
+    } else if (user.role === UserRole.COORDINATOR) {
+      await this.securityLogRepository.create({
+        user: { connect: { id: user.id } },
+        action: "LOGIN_FAILED",
+        ipAddress,
+        device,
+        createdAt: new Date(),
+      });
+      throw new HttpError(
+        403,
+        "Akun koordinator hanya dapat menggunakan email dengan domain @eng.unri.ac.id"
+      );
     }
 
     // Validasi kata sandi
     const isPasswordValid = await bcrypt.compare(password, user.password);
     if (!isPasswordValid) {
+      await this.securityLogRepository.create({
+        user: { connect: { id: user.id } },
+        action: "LOGIN_FAILED",
+        ipAddress,
+        device,
+        createdAt: new Date(),
+      });
       throw new HttpError(401, "Email atau kata sandi tidak valid");
     }
 
@@ -229,10 +302,93 @@ export class AuthService {
       createdAt: new Date(),
     });
 
+    // Ambil informasi profil berdasarkan role
+    let profile = null;
+    if (user.role === UserRole.STUDENT && user.studentId) {
+      profile = await this.studentService.getById(user.studentId);
+    } else if (user.role === UserRole.LECTURER && user.lecturerId) {
+      profile = await this.lecturerService.getById(user.lecturerId);
+    } else if (user.role === UserRole.COORDINATOR && user.coordinatorId) {
+      profile = await prisma.coordinator.findUnique({
+        where: { id: user.coordinatorId },
+      });
+    }
+
     return {
       token,
-      user: { id: user.id, email: user.email, role: user.role },
+      user: {
+        id: user.id,
+        email: user.email,
+        role: user.role,
+        profile: profile
+          ? { name: profile.name, profilePicture: profile.profilePicture }
+          : null,
+      },
     };
+  }
+
+  public async verifyToken(token: string): Promise<any> {
+    try {
+      // Konversi ke unknown terlebih dahulu untuk menghindari error TypeScript
+      const payload = jwt.verify(token, JWT_SECRET || "secret") as unknown;
+
+      // Validasi bahwa payload adalah objek dengan properti yang diharapkan
+      if (
+        typeof payload !== "object" ||
+        !payload ||
+        !("id" in payload) ||
+        !("email" in payload) ||
+        !("role" in payload)
+      ) {
+        throw new HttpError(401, "Token tidak valid");
+      }
+
+      // Type assertion ke tipe yang diinginkan setelah validasi
+      const { id, email, role } = payload as {
+        id: number;
+        email: string;
+        role: UserRole;
+      };
+
+      const user = await this.userRepository.findById(id);
+      if (!user || user.email !== email || user.role !== role) {
+        throw new HttpError(401, "Token tidak valid");
+      }
+
+      // Ambil informasi profil berdasarkan role
+      let profile = null;
+      if (user.role === UserRole.STUDENT && user.studentId) {
+        profile = await this.studentService.getById(user.studentId);
+      } else if (user.role === UserRole.LECTURER && user.lecturerId) {
+        profile = await this.lecturerService.getById(user.lecturerId);
+      } else if (user.role === UserRole.COORDINATOR && user.coordinatorId) {
+        profile = await prisma.coordinator.findUnique({
+          where: { id: user.coordinatorId },
+        });
+      }
+
+      return {
+        token,
+        user: {
+          id: user.id,
+          email: user.email,
+          role: user.role,
+          profile: profile
+            ? {
+                name: profile.name,
+                profilePicture: profile.profilePicture,
+                ...(user.role === UserRole.STUDENT && { nim: profile.nim }),
+                ...(user.role === UserRole.LECTURER && { nip: profile.nip }),
+              }
+            : null,
+        },
+      };
+    } catch (error) {
+      if (error instanceof jwt.TokenExpiredError) {
+        throw new HttpError(401, "Token telah kedaluwarsa");
+      }
+      throw new HttpError(401, "Token tidak valid");
+    }
   }
 
   private calculateSemester(nim: string): number {
