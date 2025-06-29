@@ -52,7 +52,7 @@ export const RegisterUserSchema = z
       .refine((nip) => !nip || /^[0-9]{8,}$/.test(nip), {
         message: "NIP harus berupa angka dan minimal 8 digit",
       }),
-    phoneNumber: z.string().regex(/^\+62[0-9]{9,11}$/, {
+    phoneNumber: z.string().regex(/^08[0-9]{9,11}$/, {
       message: "Nomor telepon harus diawali +62 dan memiliki 11-13 digit",
     }),
     password: z
@@ -76,6 +76,24 @@ export const RegisterUserSchema = z
     path: ["nim", "nip"],
   });
 
+export const LoginSchema = z.object({
+  email: z
+    .string()
+    .email("Format email tidak valid")
+    .refine(
+      (email) =>
+        email.endsWith("@student.unri.ac.id") ||
+        email.endsWith("@lecturer.unri.ac.id"),
+      {
+        message:
+          "Email harus menggunakan domain @student.unri.ac.id atau @lecturer.unri.ac.id",
+      }
+    ),
+  password: z.string().min(1, "Kata sandi wajib diisi"),
+  recaptchaToken: z.string().min(1, "Token reCAPTCHA wajib diisi"),
+});
+
 export type RegisterEmailDto = z.infer<typeof RegisterEmailSchema>;
 export type VerifyOtpDto = z.infer<typeof VerifyOtpSchema>;
 export type RegisterUserDto = z.infer<typeof RegisterUserSchema>;
+export type LoginDto = z.infer<typeof LoginSchema>;
