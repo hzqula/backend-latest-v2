@@ -5,6 +5,7 @@ import {
   RegisterEmailSchema,
   VerifyOtpSchema,
   RegisterUserSchema,
+  LoginSchema,
 } from "../dtos/auth.dto";
 import multer from "multer";
 
@@ -27,6 +28,11 @@ router.post(
   upload.single("profilePicture"),
   validate(RegisterUserSchema),
   authController.registerUser.bind(authController)
+);
+router.post(
+  "/login",
+  validate(LoginSchema),
+  authController.login.bind(authController)
 );
 
 export default router;
