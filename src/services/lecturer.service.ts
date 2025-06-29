@@ -30,4 +30,8 @@ export class LecturerService {
       user: { connect: { id: dto.userId } },
     });
   }
+
+  public async getById(id: number): Promise<any | null> {
+    return this.lecturerRepository.findById(id);
+  }
 }
