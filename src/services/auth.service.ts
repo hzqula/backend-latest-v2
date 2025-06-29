@@ -1,46 +1,75 @@
 import { UserRole } from "../../prisma/app/generated/prisma/client";
-import { prisma } from "../configs/prisma";
 import {
   RegisterEmailDto,
   VerifyOtpDto,
   RegisterUserDto,
+  LoginDto,
 } from "../dtos/auth.dto";
 import { UserRepository } from "../repositories/user.repository";
 import { OtpRepository } from "../repositories/otp.repository";
+import { SecurityLogRepository } from "../repositories/security-log.repository";
 import { StudentService } from "./student.service";
 import { LecturerService } from "./lecturer.service";
 import { EmailService } from "./email.service";
-import { CloudinaryService } from "./cloudinary.service";
+import { CloudinaryService } from "../services/cloudinary.service";
+import { RecaptchaService } from "../utils/recaptcha";
 import { HttpError } from "../utils/error";
 import bcrypt from "bcrypt";
+import jwt from "jsonwebtoken";
+import { JWT_SECRET } from "../configs/env";
 
 export class AuthService {
   private userRepository: UserRepository;
   private otpRepository: OtpRepository;
+  private securityLogRepository: SecurityLogRepository;
   private studentService: StudentService;
   private lecturerService: LecturerService;
   private emailService: EmailService;
   private cloudinaryService: CloudinaryService;
+  private recaptchaService: RecaptchaService;
 
   constructor() {
     this.userRepository = new UserRepository();
     this.otpRepository = new OtpRepository();
+    this.securityLogRepository = new SecurityLogRepository();
     this.studentService = new StudentService();
     this.lecturerService = new LecturerService();
     this.emailService = new EmailService();
     this.cloudinaryService = new CloudinaryService();
+    this.recaptchaService = new RecaptchaService();
   }
 
-  public async registerEmail(dto: RegisterEmailDto): Promise<string> {
+  public async registerEmail(
+    dto: RegisterEmailDto,
+    ipAddress: string,
+    device: string
+  ): Promise<string> {
     const { email } = dto;
 
+    // Periksa apakah email sudah terdaftar dengan profil lengkap dan diverifikasi
     const existingUser = await this.userRepository.findByEmail(email);
+    if (
+      existingUser &&
+      existingUser.isVerify &&
+      (existingUser.studentId || existingUser.lecturerId)
+    ) {
+      await this.securityLogRepository.create({
+        user: { connect: { id: existingUser.id } },
+        action: "REGISTER_EMAIL_FAILED",
+        ipAddress,
+        device,
+        createdAt: new Date(),
+      });
+      throw new HttpError(400, "Email sudah terdaftar dan diverifikasi");
+    }
+
+    // Jika email ada tetapi belum diverifikasi atau belum memiliki profil, hapus OTP lama
     if (existingUser) {
-      throw new HttpError(400, "Email sudah terdaftar");
+      await this.otpRepository.deleteByEmail(email);
     }
 
     const otpCode = Math.floor(100000 + Math.random() * 900000);
-    const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 menit kadaluarsa
+    const expiresAt = new Date(Date.now() + 1 * 60 * 1000); // 10 menit kadaluarsa
 
     await this.otpRepository.create({
       code: otpCode,
@@ -48,8 +77,28 @@ export class AuthService {
       expiresAt,
     });
 
-    await this.emailService.sendOtpEmail(email, otpCode);
-    return "OTP telah dikirim ke email";
+    console.log(otpCode);
+
+    try {
+      await this.emailService.sendOtpEmail(email, otpCode);
+      await this.securityLogRepository.create({
+        user: existingUser ? { connect: { id: existingUser.id } } : undefined,
+        action: "REGISTER_EMAIL_SUCCESS",
+        ipAddress,
+        device,
+        createdAt: new Date(),
+      });
+      return "OTP telah dikirim ke email";
+    } catch (error) {
+      await this.securityLogRepository.create({
+        user: existingUser ? { connect: { id: existingUser.id } } : undefined,
+        action: "REGISTER_EMAIL_FAILED",
+        ipAddress,
+        device,
+        createdAt: new Date(),
+      });
+      throw this.handleEmailError(error);
+    }
   }
 
   public async verifyOtp(dto: VerifyOtpDto): Promise<string> {
@@ -60,14 +109,19 @@ export class AuthService {
       throw new HttpError(400, "OTP tidak valid atau telah kadaluarsa");
     }
 
-    const user = await this.userRepository.create({
-      email,
-      password: "", // Sementara, akan diperbarui di registerUser
-      role: email.endsWith("@student.unri.ac.id")
-        ? UserRole.STUDENT
-        : UserRole.LECTURER,
-      isVerify: true,
-    });
+    let user = await this.userRepository.findByEmail(email);
+    if (!user) {
+      user = await this.userRepository.create({
+        email,
+        password: "", // Sementara, akan diperbarui di registerUser
+        role: email.endsWith("@student.unri.ac.id")
+          ? UserRole.STUDENT
+          : UserRole.LECTURER,
+        isVerify: true,
+      });
+    } else if (!user.isVerify) {
+      await this.userRepository.update(user.id, { isVerify: true });
+    }
 
     await this.otpRepository.deleteByEmail(email);
     return "OTP berhasil diverifikasi";
@@ -131,6 +185,56 @@ export class AuthService {
     };
   }
 
+  public async login(
+    dto: LoginDto,
+    ipAddress: string,
+    device: string
+  ): Promise<{ token: string; user: any }> {
+    const { email, password, recaptchaToken } = dto;
+
+    // Validasi reCAPTCHA
+    const isRecaptchaValid =
+      await this.recaptchaService.verifyRecaptcha(recaptchaToken);
+    if (!isRecaptchaValid) {
+      throw new HttpError(400, "Verifikasi reCAPTCHA gagal");
+    }
+
+    // Cari pengguna berdasarkan email
+    const user = await this.userRepository.findByEmail(email);
+    if (!user || !user.isVerify) {
+      throw new HttpError(401, "Email atau kata sandi tidak valid");
+    }
+
+    // Validasi kata sandi
+    const isPasswordValid = await bcrypt.compare(password, user.password);
+    if (!isPasswordValid) {
+      throw new HttpError(401, "Email atau kata sandi tidak valid");
+    }
+
+    // Buat JWT
+    const token = jwt.sign(
+      { id: user.id, email: user.email, role: user.role },
+      JWT_SECRET || "secret",
+      {
+        expiresIn: "1h",
+      }
+    );
+
+    // Catat aktivitas login ke SecurityLog
+    await this.securityLogRepository.create({
+      user: { connect: { id: user.id } },
+      action: "LOGIN",
+      ipAddress,
+      device,
+      createdAt: new Date(),
+    });
+
+    return {
+      token,
+      user: { id: user.id, email: user.email, role: user.role },
+    };
+  }
+
   private calculateSemester(nim: string): number {
     const currentDate = new Date();
     const currentYear = currentDate.getFullYear() % 100;
@@ -139,5 +243,24 @@ export class AuthService {
 
     const isOddSemester = currentDate.getMonth() >= 6;
     return isOddSemester ? yearDiff * 2 + 1 : yearDiff * 2;
+  }
+
+  private handleEmailError(error: unknown): HttpError {
+    console.error("Error mengirim email OTP:", error);
+    if (error instanceof Error) {
+      if (error.message.includes("authentication")) {
+        return new HttpError(
+          500,
+          "Gagal mengirim OTP: Kesalahan otentikasi SMTP"
+        );
+      }
+      if (error.message.includes("connection")) {
+        return new HttpError(
+          500,
+          "Gagal mengirim OTP: Masalah koneksi ke server SMTP"
+        );
+      }
+    }
+    return new HttpError(500, "Gagal mengirim OTP: Terjadi kesalahan server");
   }
 }
