@@ -6,6 +6,10 @@ export class LecturerRepository {
     return prisma.lecturer.findUnique({ where: { nip } });
   }
 
+  public async findById(id: number): Promise<Lecturer | null> {
+    return prisma.lecturer.findUnique({ where: { id } });
+  }
+
   public async create(data: Prisma.LecturerCreateInput): Promise<Lecturer> {
     return prisma.lecturer.create({ data });
   }

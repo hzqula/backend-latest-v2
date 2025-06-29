@@ -6,6 +6,10 @@ export class StudentRepository {
     return prisma.student.findUnique({ where: { nim } });
   }
 
+  public async findById(id: number): Promise<Student | null> {
+    return prisma.student.findUnique({ where: { id } });
+  }
+
   public async create(data: Prisma.StudentCreateInput): Promise<Student> {
     return prisma.student.create({ data });
   }
